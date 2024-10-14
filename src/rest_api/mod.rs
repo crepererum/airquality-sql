@@ -1,14 +1,108 @@
 //! See <https://www.umweltbundesamt.de/daten/luft/luftdaten/doc>.
 
-use std::collections::HashMap;
+pub(crate) mod utils;
+
+use std::{collections::HashMap, marker::PhantomData};
 
 use anyhow::{Context, Result};
 use jiff::civil::DateTime;
 use reqwest::Client;
-use serde::{de::Error, Deserialize, Deserializer};
+use serde::{
+    de::{Error, SeqAccess, Visitor},
+    Deserialize, Deserializer,
+};
 use serde_tuple::Deserialize_tuple;
 
+use utils::{IntBool, OptionalString, StringF64, StringU64, ZipCode};
+
 const BASE_URL: &str = "https://www.umweltbundesamt.de/api/air_data/v3";
+
+#[derive(Debug, Deserialize_tuple)]
+pub(crate) struct AirQualityComponent {
+    pub(crate) _id: u64,
+    pub(crate) _value: u64,
+    pub(crate) _index: u64,
+    pub(crate) _y_value: StringF64,
+}
+
+#[derive(Debug)]
+pub(crate) struct AirQualityRow {
+    pub(crate) date_end: DateTime,
+    pub(crate) index: u64,
+    pub(crate) incomplete: IntBool,
+    pub(crate) _components: Vec<AirQualityComponent>,
+}
+
+impl<'de> serde::Deserialize<'de> for AirQualityRow {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        /// See <https://github.com/serde-rs/serde/issues/1337#issuecomment-404239049>.
+        struct PrefixVisitor(PhantomData<(DateTime, u64, IntBool, AirQualityComponent)>);
+
+        impl<'de> Visitor<'de> for PrefixVisitor {
+            type Value = AirQualityRow;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let date_end = seq
+                    .next_element()?
+                    .ok_or_else(|| Error::invalid_length(0, &self))?;
+                let index = seq
+                    .next_element()?
+                    .ok_or_else(|| Error::invalid_length(1, &self))?;
+                let incomplete = seq
+                    .next_element()?
+                    .ok_or_else(|| Error::invalid_length(2, &self))?;
+                let components = Vec::<AirQualityComponent>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(seq),
+                )?;
+                Ok(AirQualityRow {
+                    date_end,
+                    incomplete,
+                    index,
+                    _components: components,
+                })
+            }
+        }
+
+        deserializer.deserialize_seq(PrefixVisitor(PhantomData))
+    }
+}
+
+pub(crate) type AirQuality = HashMap<StringU64, HashMap<DateTime, AirQualityRow>>;
+
+pub(crate) async fn list_air_quality(client: &Client) -> Result<AirQuality> {
+    Ok(client
+        .get(format!("{BASE_URL}/airquality/json"))
+        .query(&[
+            ("date_from", "2019-01-01"),
+            ("time_from", "9"),
+            ("date_to", "2019-01-01"),
+            ("time_to", "9"),
+        ])
+        .send()
+        .await
+        .context("send request")?
+        .error_for_status()
+        .context("HTTP error")?
+        .json::<AirQualityResponse>()
+        .await
+        .context("get JSON")?
+        .data)
+}
+
+#[derive(Debug, Deserialize)]
+struct AirQualityResponse {
+    data: AirQuality,
+}
 
 #[derive(Debug, Deserialize_tuple)]
 pub(crate) struct Component {
@@ -197,86 +291,4 @@ struct StationTypeResponse {
 
     #[serde(flatten)]
     data: HashMap<StringU64, StationType>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct StringU64(u64);
-
-impl<'de> serde::Deserialize<'de> for StringU64 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let n = s
-            .parse()
-            .map_err(|e| D::Error::custom(format!("invalid number: {e}")))?;
-        Ok(Self(n))
-    }
-}
-
-impl From<StringU64> for u64 {
-    fn from(value: StringU64) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct StringF64(f64);
-
-impl<'de> serde::Deserialize<'de> for StringF64 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let n = s
-            .parse()
-            .map_err(|e| D::Error::custom(format!("invalid number: {e}")))?;
-        Ok(Self(n))
-    }
-}
-
-impl From<StringF64> for f64 {
-    fn from(value: StringF64) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct OptionalString(Option<String>);
-
-impl<'de> serde::Deserialize<'de> for OptionalString {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(Self((!s.is_empty()).then_some(s)))
-    }
-}
-
-impl From<OptionalString> for Option<String> {
-    fn from(value: OptionalString) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct ZipCode(Option<String>);
-
-impl<'de> serde::Deserialize<'de> for ZipCode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(Self((!s.is_empty() && s != "00000").then_some(s)))
-    }
-}
-
-impl From<ZipCode> for Option<String> {
-    fn from(value: ZipCode) -> Self {
-        value.0
-    }
 }

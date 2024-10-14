@@ -2,7 +2,10 @@ use std::{any::Any, sync::Arc};
 
 use anyhow::Context;
 use arrow::{
-    array::{Float64Builder, RecordBatch, StringBuilder, TimestampSecondBuilder, UInt64Builder},
+    array::{
+        BooleanBuilder, Float64Builder, RecordBatch, StringBuilder, TimestampSecondBuilder,
+        UInt64Builder,
+    },
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use async_trait::async_trait;
@@ -17,7 +20,9 @@ use datafusion::{
 use reqwest::Client;
 
 use crate::{
-    rest_api::{Component, Network, Station, StationSetting, StationType},
+    rest_api::{
+        list_air_quality, AirQualityRow, Component, Network, Station, StationSetting, StationType,
+    },
     time::{dt_to_seconds, ts_datatype, ARROW_TZ},
 };
 
@@ -25,6 +30,14 @@ pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
     let client = Client::new();
 
     let provider = MemorySchemaProvider::new();
+    provider
+        .register_table(
+            "air_quality".to_owned(),
+            Arc::new(AirQualityTable {
+                client: client.clone(),
+            }),
+        )
+        .expect("should always for for mem provider");
     provider
         .register_table(
             "components".to_owned(),
@@ -66,6 +79,86 @@ pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
         )
         .expect("should always for for mem provider");
     Arc::new(provider)
+}
+
+struct AirQualityTable {
+    client: Client,
+}
+
+#[async_trait]
+impl TableProvider for AirQualityTable {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::new([
+            Arc::new(Field::new("station_id", DataType::UInt64, false)),
+            Arc::new(Field::new("date_start", ts_datatype(), false)),
+            Arc::new(Field::new("date_end", ts_datatype(), false)),
+            Arc::new(Field::new("index", DataType::UInt64, false)),
+            Arc::new(Field::new("incomplete", DataType::Boolean, false)),
+        ]))
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let res = list_air_quality(&self.client)
+            .await
+            .context("list air quality")
+            .map_err(|e| DataFusionError::External(e.into()))?;
+
+        let mut station_id_builder = UInt64Builder::new();
+        let mut date_start_builder =
+            TimestampSecondBuilder::new().with_timezone(Arc::clone(&ARROW_TZ));
+        let mut date_end_builder =
+            TimestampSecondBuilder::new().with_timezone(Arc::clone(&ARROW_TZ));
+        let mut index_builder = UInt64Builder::new();
+        let mut incomplete_builder = BooleanBuilder::new();
+        for (station_id, sub) in res {
+            for (date_start, row) in sub {
+                let AirQualityRow {
+                    date_end,
+                    index,
+                    incomplete,
+                    ..
+                } = row;
+
+                station_id_builder.append_value(station_id.into());
+                date_start_builder.append_value(
+                    dt_to_seconds(date_start).map_err(|e| DataFusionError::External(e.into()))?,
+                );
+                date_end_builder.append_value(
+                    dt_to_seconds(date_end).map_err(|e| DataFusionError::External(e.into()))?,
+                );
+                index_builder.append_value(index);
+                incomplete_builder.append_value(incomplete.into());
+            }
+        }
+
+        let schema = self.schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(station_id_builder.finish()),
+                Arc::new(date_start_builder.finish()),
+                Arc::new(date_end_builder.finish()),
+                Arc::new(index_builder.finish()),
+                Arc::new(incomplete_builder.finish()),
+            ],
+        )?;
+        let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
+        Ok(Arc::new(exec))
+    }
 }
 
 struct ComponentsTable {
@@ -171,7 +264,7 @@ impl TableProvider for NetworksTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let networks = Network::list(&self.client)
             .await
-            .context("list components")
+            .context("list networks")
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let mut id_builder = UInt64Builder::with_capacity(networks.len());
@@ -364,7 +457,7 @@ impl TableProvider for StationSettingsTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let settings = StationSetting::list(&self.client)
             .await
-            .context("list components")
+            .context("list station settings")
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let mut id_builder = UInt64Builder::with_capacity(settings.len());
@@ -425,7 +518,7 @@ impl TableProvider for StationTypesTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let stypes = StationType::list(&self.client)
             .await
-            .context("list components")
+            .context("list station types")
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let mut id_builder = UInt64Builder::with_capacity(stypes.len());
