@@ -17,7 +17,7 @@ use datafusion::{
 };
 use reqwest::Client;
 
-use crate::rest_api::{Component, Network, Station, StationSetting};
+use crate::rest_api::{Component, Network, Station, StationSetting, StationType};
 
 pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
     let client = Client::new();
@@ -55,6 +55,14 @@ pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
             }),
         )
         .expect("should always for for mem provider");
+    provider
+        .register_table(
+            "station_types".to_owned(),
+            Arc::new(StationTypesTable {
+                client: client.clone(),
+            }),
+        )
+        .expect("should always for for mem provider");
     Arc::new(provider)
 }
 
@@ -74,6 +82,7 @@ impl TableProvider for ComponentsTable {
             Arc::new(Field::new("code", DataType::Utf8, false)),
             Arc::new(Field::new("symbol", DataType::Utf8, false)),
             Arc::new(Field::new("unit", DataType::Utf8, false)),
+            Arc::new(Field::new("translated_name", DataType::Utf8, false)),
         ]))
     }
 
@@ -97,18 +106,20 @@ impl TableProvider for ComponentsTable {
         let mut code_builder = StringBuilder::new();
         let mut symbol_builder = StringBuilder::new();
         let mut unit_builder = StringBuilder::new();
+        let mut translated_name_builder = StringBuilder::new();
         for component in components {
             let Component {
                 id,
                 code,
                 symbol,
                 unit,
-                ..
+                translated_name,
             } = component;
             id_builder.append_value(id.into());
             code_builder.append_value(code);
             symbol_builder.append_value(symbol);
             unit_builder.append_value(unit);
+            translated_name_builder.append_value(translated_name);
         }
 
         let schema = self.schema();
@@ -119,6 +130,7 @@ impl TableProvider for ComponentsTable {
                 Arc::new(code_builder.finish()),
                 Arc::new(symbol_builder.finish()),
                 Arc::new(unit_builder.finish()),
+                Arc::new(translated_name_builder.finish()),
             ],
         )?;
         let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
@@ -218,6 +230,7 @@ impl TableProvider for StationsTable {
             Arc::new(Field::new("date_of_last_activity", DataType::Date64, true)),
             Arc::new(Field::new("id_of_network", DataType::UInt64, false)),
             Arc::new(Field::new("id_of_station_setting", DataType::UInt64, false)),
+            Arc::new(Field::new("id_of_station_type", DataType::UInt64, false)),
         ]))
     }
 
@@ -251,6 +264,7 @@ impl TableProvider for StationsTable {
         let mut zip_code_builder = StringBuilder::new();
         let mut id_of_network_builder = UInt64Builder::with_capacity(stations.len());
         let mut id_of_station_setting_builder = UInt64Builder::with_capacity(stations.len());
+        let mut id_of_station_type_builder = UInt64Builder::with_capacity(stations.len());
         for station in stations {
             let Station {
                 id,
@@ -267,6 +281,7 @@ impl TableProvider for StationsTable {
                 zip_code,
                 id_of_network,
                 id_of_station_setting,
+                id_of_station_type,
                 ..
             } = station;
             id_builder.append_value(id.into());
@@ -290,6 +305,7 @@ impl TableProvider for StationsTable {
             zip_code_builder.append_option(Option::<String>::from(zip_code));
             id_of_network_builder.append_value(id_of_network.into());
             id_of_station_setting_builder.append_value(id_of_station_setting.into());
+            id_of_station_type_builder.append_value(id_of_station_type.into());
         }
 
         let schema = self.schema();
@@ -310,6 +326,7 @@ impl TableProvider for StationsTable {
                 Arc::new(date_of_last_activity_builder.finish()),
                 Arc::new(id_of_network_builder.finish()),
                 Arc::new(id_of_station_setting_builder.finish()),
+                Arc::new(id_of_station_type_builder.finish()),
             ],
         )?;
         let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
@@ -372,6 +389,63 @@ impl TableProvider for StationSettingsTable {
                 Arc::new(id_builder.finish()),
                 Arc::new(translated_name_builder.finish()),
                 Arc::new(translated_short_name_builder.finish()),
+            ],
+        )?;
+        let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
+        Ok(Arc::new(exec))
+    }
+}
+
+struct StationTypesTable {
+    client: Client,
+}
+
+#[async_trait]
+impl TableProvider for StationTypesTable {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::new([
+            Arc::new(Field::new("id", DataType::UInt64, false)),
+            Arc::new(Field::new("translated_name", DataType::Utf8, false)),
+        ]))
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let stypes = StationType::list(&self.client)
+            .await
+            .context("list components")
+            .map_err(|e| DataFusionError::External(e.into()))?;
+
+        let mut id_builder = UInt64Builder::with_capacity(stypes.len());
+        let mut translated_name_builder = StringBuilder::new();
+        for stype in stypes {
+            let StationType {
+                id,
+                translated_name,
+            } = stype;
+            id_builder.append_value(id.into());
+            translated_name_builder.append_value(translated_name);
+        }
+
+        let schema = self.schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(id_builder.finish()),
+                Arc::new(translated_name_builder.finish()),
             ],
         )?;
         let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;

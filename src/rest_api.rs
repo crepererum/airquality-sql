@@ -16,11 +16,11 @@ pub(crate) struct Component {
     pub(crate) code: String,
     pub(crate) symbol: String,
     pub(crate) unit: String,
-    pub(crate) _translated_name: String,
+    pub(crate) translated_name: String,
 }
 
 impl Component {
-    pub(crate) async fn list(client: &Client) -> Result<Vec<Component>> {
+    pub(crate) async fn list(client: &Client) -> Result<Vec<Self>> {
         Ok(client
             .get(format!("{BASE_URL}/components/json"))
             .send()
@@ -57,7 +57,7 @@ pub(crate) struct Network {
 }
 
 impl Network {
-    pub(crate) async fn list(client: &Client) -> Result<Vec<Network>> {
+    pub(crate) async fn list(client: &Client) -> Result<Vec<Self>> {
         Ok(client
             .get(format!("{BASE_URL}/networks/json"))
             .send()
@@ -92,7 +92,7 @@ pub(crate) struct Station {
     pub(crate) latitude: StringF64,
     pub(crate) id_of_network: StringU64,
     pub(crate) id_of_station_setting: StringU64,
-    pub(crate) _id_of_station_type: StringU64,
+    pub(crate) id_of_station_type: StringU64,
     pub(crate) _code_of_network: String,
     pub(crate) _translated_name_of_network: String,
     pub(crate) _translated_name_of_station_setting: String,
@@ -104,7 +104,7 @@ pub(crate) struct Station {
 }
 
 impl Station {
-    pub(crate) async fn list(client: &Client) -> Result<Vec<Station>> {
+    pub(crate) async fn list(client: &Client) -> Result<Vec<Self>> {
         Ok(client
             .get(format!("{BASE_URL}/stations/json"))
             .send()
@@ -134,7 +134,7 @@ pub(crate) struct StationSetting {
 }
 
 impl StationSetting {
-    pub(crate) async fn list(client: &Client) -> Result<Vec<StationSetting>> {
+    pub(crate) async fn list(client: &Client) -> Result<Vec<Self>> {
         Ok(client
             .get(format!("{BASE_URL}/stationsettings/json"))
             .send()
@@ -161,6 +161,42 @@ struct StationSettingResponse {
 
     #[serde(flatten)]
     data: HashMap<StringU64, StationSetting>,
+}
+
+#[derive(Debug, Deserialize_tuple)]
+pub(crate) struct StationType {
+    pub(crate) id: StringU64,
+    pub(crate) translated_name: String,
+}
+
+impl StationType {
+    pub(crate) async fn list(client: &Client) -> Result<Vec<Self>> {
+        Ok(client
+            .get(format!("{BASE_URL}/stationtypes/json"))
+            .send()
+            .await
+            .context("send request")?
+            .error_for_status()
+            .context("HTTP error")?
+            .json::<StationTypeResponse>()
+            .await
+            .context("get JSON")?
+            .data
+            .into_values()
+            .collect())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StationTypeResponse {
+    #[serde(rename = "count")]
+    _count: u64,
+
+    #[serde(rename = "indices")]
+    _indices: Vec<String>,
+
+    #[serde(flatten)]
+    data: HashMap<StringU64, StationType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
