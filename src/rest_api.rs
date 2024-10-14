@@ -91,7 +91,7 @@ pub(crate) struct Station {
     pub(crate) longitude: StringF64,
     pub(crate) latitude: StringF64,
     pub(crate) id_of_network: StringU64,
-    pub(crate) _id_of_station_setting: StringU64,
+    pub(crate) id_of_station_setting: StringU64,
     pub(crate) _id_of_station_type: StringU64,
     pub(crate) _code_of_network: String,
     pub(crate) _translated_name_of_network: String,
@@ -124,6 +124,43 @@ impl Station {
 #[derive(Debug, Deserialize)]
 struct StationsResponse {
     data: HashMap<StringU64, Station>,
+}
+
+#[derive(Debug, Deserialize_tuple)]
+pub(crate) struct StationSetting {
+    pub(crate) id: StringU64,
+    pub(crate) translated_name: String,
+    pub(crate) translated_short_name: String,
+}
+
+impl StationSetting {
+    pub(crate) async fn list(client: &Client) -> Result<Vec<StationSetting>> {
+        Ok(client
+            .get(format!("{BASE_URL}/stationsettings/json"))
+            .send()
+            .await
+            .context("send request")?
+            .error_for_status()
+            .context("HTTP error")?
+            .json::<StationSettingResponse>()
+            .await
+            .context("get JSON")?
+            .data
+            .into_values()
+            .collect())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StationSettingResponse {
+    #[serde(rename = "count")]
+    _count: u64,
+
+    #[serde(rename = "indices")]
+    _indices: Vec<String>,
+
+    #[serde(flatten)]
+    data: HashMap<StringU64, StationSetting>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

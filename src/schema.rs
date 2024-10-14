@@ -17,7 +17,7 @@ use datafusion::{
 };
 use reqwest::Client;
 
-use crate::rest_api::{Component, Network, Station};
+use crate::rest_api::{Component, Network, Station, StationSetting};
 
 pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
     let client = Client::new();
@@ -43,6 +43,14 @@ pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
         .register_table(
             "stations".to_owned(),
             Arc::new(StationsTable {
+                client: client.clone(),
+            }),
+        )
+        .expect("should always for for mem provider");
+    provider
+        .register_table(
+            "station_settings".to_owned(),
+            Arc::new(StationSettingsTable {
                 client: client.clone(),
             }),
         )
@@ -209,6 +217,7 @@ impl TableProvider for StationsTable {
             )),
             Arc::new(Field::new("date_of_last_activity", DataType::Date64, true)),
             Arc::new(Field::new("id_of_network", DataType::UInt64, false)),
+            Arc::new(Field::new("id_of_station_setting", DataType::UInt64, false)),
         ]))
     }
 
@@ -241,6 +250,7 @@ impl TableProvider for StationsTable {
         let mut street_number_builder = StringBuilder::new();
         let mut zip_code_builder = StringBuilder::new();
         let mut id_of_network_builder = UInt64Builder::with_capacity(stations.len());
+        let mut id_of_station_setting_builder = UInt64Builder::with_capacity(stations.len());
         for station in stations {
             let Station {
                 id,
@@ -256,6 +266,7 @@ impl TableProvider for StationsTable {
                 street_number,
                 zip_code,
                 id_of_network,
+                id_of_station_setting,
                 ..
             } = station;
             id_builder.append_value(id.into());
@@ -278,6 +289,7 @@ impl TableProvider for StationsTable {
             street_number_builder.append_option(Option::<String>::from(street_number));
             zip_code_builder.append_option(Option::<String>::from(zip_code));
             id_of_network_builder.append_value(id_of_network.into());
+            id_of_station_setting_builder.append_value(id_of_station_setting.into());
         }
 
         let schema = self.schema();
@@ -297,6 +309,69 @@ impl TableProvider for StationsTable {
                 Arc::new(date_of_first_activity_builder.finish()),
                 Arc::new(date_of_last_activity_builder.finish()),
                 Arc::new(id_of_network_builder.finish()),
+                Arc::new(id_of_station_setting_builder.finish()),
+            ],
+        )?;
+        let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
+        Ok(Arc::new(exec))
+    }
+}
+
+struct StationSettingsTable {
+    client: Client,
+}
+
+#[async_trait]
+impl TableProvider for StationSettingsTable {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::new([
+            Arc::new(Field::new("id", DataType::UInt64, false)),
+            Arc::new(Field::new("translated_name", DataType::Utf8, false)),
+            Arc::new(Field::new("translated_short_name", DataType::Utf8, false)),
+        ]))
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let settings = StationSetting::list(&self.client)
+            .await
+            .context("list components")
+            .map_err(|e| DataFusionError::External(e.into()))?;
+
+        let mut id_builder = UInt64Builder::with_capacity(settings.len());
+        let mut translated_name_builder = StringBuilder::new();
+        let mut translated_short_name_builder = StringBuilder::new();
+        for setting in settings {
+            let StationSetting {
+                id,
+                translated_name,
+                translated_short_name,
+            } = setting;
+            id_builder.append_value(id.into());
+            translated_name_builder.append_value(translated_name);
+            translated_short_name_builder.append_value(translated_short_name);
+        }
+
+        let schema = self.schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(id_builder.finish()),
+                Arc::new(translated_name_builder.finish()),
+                Arc::new(translated_short_name_builder.finish()),
             ],
         )?;
         let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
