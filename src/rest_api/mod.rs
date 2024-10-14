@@ -19,10 +19,10 @@ const BASE_URL: &str = "https://www.umweltbundesamt.de/api/air_data/v3";
 
 #[derive(Debug, Deserialize_tuple)]
 pub(crate) struct AirQualityComponent {
-    pub(crate) _id: u64,
-    pub(crate) _value: u64,
-    pub(crate) _index: u64,
-    pub(crate) _y_value: StringF64,
+    pub(crate) id: u64,
+    pub(crate) value: u64,
+    pub(crate) index: u64,
+    pub(crate) y_value: StringF64,
 }
 
 #[derive(Debug)]
@@ -30,7 +30,7 @@ pub(crate) struct AirQualityRow {
     pub(crate) date_end: DateTime,
     pub(crate) index: u64,
     pub(crate) incomplete: IntBool,
-    pub(crate) _components: Vec<AirQualityComponent>,
+    pub(crate) components: Vec<AirQualityComponent>,
 }
 
 impl<'de> serde::Deserialize<'de> for AirQualityRow {
@@ -68,7 +68,7 @@ impl<'de> serde::Deserialize<'de> for AirQualityRow {
                     date_end,
                     incomplete,
                     index,
-                    _components: components,
+                    components,
                 })
             }
         }

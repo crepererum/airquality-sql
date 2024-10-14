@@ -3,10 +3,10 @@ use std::{any::Any, sync::Arc};
 use anyhow::Context;
 use arrow::{
     array::{
-        BooleanBuilder, Float64Builder, RecordBatch, StringBuilder, TimestampSecondBuilder,
-        UInt64Builder,
+        BooleanBuilder, Float64Builder, ListBuilder, RecordBatch, StringBuilder, StructBuilder,
+        TimestampSecondBuilder, UInt64Builder,
     },
-    datatypes::{DataType, Field, Schema, SchemaRef},
+    datatypes::{DataType, Field, Fields, Schema, SchemaRef},
 };
 use async_trait::async_trait;
 use datafusion::{
@@ -21,7 +21,8 @@ use reqwest::Client;
 
 use crate::{
     rest_api::{
-        list_air_quality, AirQualityRow, Component, Network, Station, StationSetting, StationType,
+        list_air_quality, AirQualityComponent, AirQualityRow, Component, Network, Station,
+        StationSetting, StationType,
     },
     time::{dt_to_seconds, ts_datatype, ARROW_TZ},
 };
@@ -85,6 +86,25 @@ struct AirQualityTable {
     client: Client,
 }
 
+impl AirQualityTable {
+    fn component_struct_fields() -> Fields {
+        Fields::from(vec![
+            Field::new("id", DataType::UInt64, false),
+            Field::new("value", DataType::UInt64, false),
+            Field::new("index", DataType::UInt64, false),
+            Field::new("y_value", DataType::Float64, false),
+        ])
+    }
+
+    fn component_field() -> Arc<Field> {
+        Arc::new(Field::new(
+            "component",
+            DataType::Struct(Self::component_struct_fields()),
+            false,
+        ))
+    }
+}
+
 #[async_trait]
 impl TableProvider for AirQualityTable {
     fn as_any(&self) -> &dyn Any {
@@ -98,6 +118,11 @@ impl TableProvider for AirQualityTable {
             Arc::new(Field::new("date_end", ts_datatype(), false)),
             Arc::new(Field::new("index", DataType::UInt64, false)),
             Arc::new(Field::new("incomplete", DataType::Boolean, false)),
+            Arc::new(Field::new(
+                "components",
+                DataType::List(Self::component_field()),
+                false,
+            )),
         ]))
     }
 
@@ -124,13 +149,18 @@ impl TableProvider for AirQualityTable {
             TimestampSecondBuilder::new().with_timezone(Arc::clone(&ARROW_TZ));
         let mut index_builder = UInt64Builder::new();
         let mut incomplete_builder = BooleanBuilder::new();
+        let mut components_builder = ListBuilder::new(StructBuilder::from_fields(
+            Self::component_struct_fields(),
+            1024,
+        ))
+        .with_field(Self::component_field());
         for (station_id, sub) in res {
             for (date_start, row) in sub {
                 let AirQualityRow {
                     date_end,
                     index,
                     incomplete,
-                    ..
+                    components,
                 } = row;
 
                 station_id_builder.append_value(station_id.into());
@@ -142,6 +172,35 @@ impl TableProvider for AirQualityTable {
                 );
                 index_builder.append_value(index);
                 incomplete_builder.append_value(incomplete.into());
+
+                for component in components {
+                    let AirQualityComponent {
+                        id,
+                        value,
+                        index,
+                        y_value,
+                    } = component;
+
+                    let struct_builder = components_builder.values();
+                    struct_builder
+                        .field_builder::<UInt64Builder>(0)
+                        .expect("correct type")
+                        .append_value(id);
+                    struct_builder
+                        .field_builder::<UInt64Builder>(1)
+                        .expect("correct type")
+                        .append_value(value);
+                    struct_builder
+                        .field_builder::<UInt64Builder>(2)
+                        .expect("correct type")
+                        .append_value(index);
+                    struct_builder
+                        .field_builder::<Float64Builder>(3)
+                        .expect("correct type")
+                        .append_value(y_value.into());
+                    struct_builder.append(true);
+                }
+                components_builder.append(true);
             }
         }
 
@@ -154,6 +213,7 @@ impl TableProvider for AirQualityTable {
                 Arc::new(date_end_builder.finish()),
                 Arc::new(index_builder.finish()),
                 Arc::new(incomplete_builder.finish()),
+                Arc::new(components_builder.finish()),
             ],
         )?;
         let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
