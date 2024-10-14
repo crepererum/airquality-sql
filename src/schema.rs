@@ -2,11 +2,10 @@ use std::{any::Any, sync::Arc};
 
 use anyhow::Context;
 use arrow::{
-    array::{Date64Builder, Float64Builder, RecordBatch, StringBuilder, UInt64Builder},
+    array::{Float64Builder, RecordBatch, StringBuilder, TimestampSecondBuilder, UInt64Builder},
     datatypes::{DataType, Field, Schema, SchemaRef},
 };
 use async_trait::async_trait;
-use chrono::NaiveDateTime;
 use datafusion::{
     catalog::{SchemaProvider, Session, TableProvider},
     catalog_common::MemorySchemaProvider,
@@ -17,7 +16,10 @@ use datafusion::{
 };
 use reqwest::Client;
 
-use crate::rest_api::{Component, Network, Station, StationSetting, StationType};
+use crate::{
+    rest_api::{Component, Network, Station, StationSetting, StationType},
+    time::{dt_to_seconds, ts_datatype, ARROW_TZ},
+};
 
 pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
     let client = Client::new();
@@ -222,12 +224,8 @@ impl TableProvider for StationsTable {
             Arc::new(Field::new("zip_code", DataType::Utf8, true)),
             Arc::new(Field::new("longitude", DataType::Float64, false)),
             Arc::new(Field::new("latitude", DataType::Float64, false)),
-            Arc::new(Field::new(
-                "date_of_first_activity",
-                DataType::Date64,
-                false,
-            )),
-            Arc::new(Field::new("date_of_last_activity", DataType::Date64, true)),
+            Arc::new(Field::new("activity_from", ts_datatype(), false)),
+            Arc::new(Field::new("activity_to", ts_datatype(), true)),
             Arc::new(Field::new("id_of_network", DataType::UInt64, false)),
             Arc::new(Field::new("id_of_station_setting", DataType::UInt64, false)),
             Arc::new(Field::new("id_of_station_type", DataType::UInt64, false)),
@@ -255,8 +253,10 @@ impl TableProvider for StationsTable {
         let mut name_builder = StringBuilder::new();
         let mut city_builder = StringBuilder::new();
         let mut synonym_builder = StringBuilder::new();
-        let mut date_of_first_activity_builder = Date64Builder::with_capacity(stations.len());
-        let mut date_of_last_activity_builder = Date64Builder::with_capacity(stations.len());
+        let mut activity_from_builder = TimestampSecondBuilder::with_capacity(stations.len())
+            .with_timezone(Arc::clone(&ARROW_TZ));
+        let mut activity_to_builder = TimestampSecondBuilder::with_capacity(stations.len())
+            .with_timezone(Arc::clone(&ARROW_TZ));
         let mut longitude_builder = Float64Builder::with_capacity(stations.len());
         let mut latitude_builder = Float64Builder::with_capacity(stations.len());
         let mut street_builder = StringBuilder::new();
@@ -272,8 +272,8 @@ impl TableProvider for StationsTable {
                 name,
                 city,
                 synonym,
-                date_of_first_activity,
-                date_of_last_activity,
+                activity_from,
+                activity_to,
                 longitude,
                 latitude,
                 street,
@@ -289,14 +289,13 @@ impl TableProvider for StationsTable {
             name_builder.append_value(name);
             city_builder.append_option(Option::<String>::from(city));
             synonym_builder.append_option(Option::<String>::from(synonym));
-            date_of_first_activity_builder.append_value(
-                NaiveDateTime::from(date_of_first_activity)
-                    .and_utc()
-                    .timestamp_millis(),
+            activity_from_builder.append_value(
+                dt_to_seconds(activity_from).map_err(|e| DataFusionError::External(e.into()))?,
             );
-            date_of_last_activity_builder.append_option(
-                date_of_last_activity
-                    .map(|day| NaiveDateTime::from(day).and_utc().timestamp_millis()),
+            activity_to_builder.append_option(
+                activity_to
+                    .map(|dt| dt_to_seconds(dt).map_err(|e| DataFusionError::External(e.into())))
+                    .transpose()?,
             );
             longitude_builder.append_value(longitude.into());
             latitude_builder.append_value(latitude.into());
@@ -322,8 +321,8 @@ impl TableProvider for StationsTable {
                 Arc::new(zip_code_builder.finish()),
                 Arc::new(longitude_builder.finish()),
                 Arc::new(latitude_builder.finish()),
-                Arc::new(date_of_first_activity_builder.finish()),
-                Arc::new(date_of_last_activity_builder.finish()),
+                Arc::new(activity_from_builder.finish()),
+                Arc::new(activity_to_builder.finish()),
                 Arc::new(id_of_network_builder.finish()),
                 Arc::new(id_of_station_setting_builder.finish()),
                 Arc::new(id_of_station_type_builder.finish()),

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use chrono::NaiveDate;
+use jiff::civil::DateTime;
 use reqwest::Client;
 use serde::{de::Error, Deserialize, Deserializer};
 use serde_tuple::Deserialize_tuple;
@@ -86,8 +86,8 @@ pub(crate) struct Station {
     pub(crate) name: String,
     pub(crate) city: OptionalString,
     pub(crate) synonym: OptionalString,
-    pub(crate) date_of_first_activity: NaiveDate,
-    pub(crate) date_of_last_activity: Option<NaiveDate>,
+    pub(crate) activity_from: DateTime,
+    pub(crate) activity_to: Option<DateTime>,
     pub(crate) longitude: StringF64,
     pub(crate) latitude: StringF64,
     pub(crate) id_of_network: StringU64,
