@@ -12,11 +12,15 @@ use async_trait::async_trait;
 use datafusion::{
     catalog::{SchemaProvider, Session, TableProvider},
     catalog_common::MemorySchemaProvider,
+    common::DFSchema,
     datasource::TableType,
     error::{DataFusionError, Result},
+    logical_expr::{utils::conjunction, TableProviderFilterPushDown},
+    physical_expr::ExprBoundaries,
     physical_plan::{memory::MemoryExec, ExecutionPlan},
     prelude::Expr,
 };
+use jiff::{civil::DateTime, Timestamp};
 use reqwest::Client;
 
 use crate::{
@@ -24,7 +28,7 @@ use crate::{
         list_air_quality, AirQualityComponent, AirQualityRow, Component, Network, Station,
         StationSetting, StationType,
     },
-    time::{dt_to_seconds, ts_datatype, ARROW_TZ},
+    time::{dt_to_seconds, extract_from_scalar, ts_datatype, ARROW_TZ, JIFF_TZ},
 };
 
 pub(crate) fn schema_provider() -> Arc<dyn SchemaProvider> {
@@ -87,6 +91,9 @@ struct AirQualityTable {
 }
 
 impl AirQualityTable {
+    const COL_DATE_START: &str = "date_start";
+    const COL_DATE_END: &str = "date_end";
+
     fn component_struct_fields() -> Fields {
         Fields::from(vec![
             Field::new("id", DataType::UInt64, false),
@@ -103,6 +110,54 @@ impl AirQualityTable {
             false,
         ))
     }
+
+    fn analyze_date_range(
+        &self,
+        state: &dyn Session,
+        filters: &[Expr],
+        schema: &SchemaRef,
+    ) -> Result<(Timestamp, Timestamp)> {
+        // set default range
+        let default = "2019-01-01T09:00:00"
+            .parse::<DateTime>()
+            .expect("default should parse")
+            .to_zoned(JIFF_TZ.clone())
+            .expect("default should be in correct zone")
+            .timestamp();
+        let mut ts_start = default;
+        let mut ts_end = default;
+
+        let df_schema = DFSchema::try_from(Arc::clone(schema))?;
+
+        let Some(expr) = conjunction(filters.iter().cloned()) else {
+            return Ok((ts_start, ts_end));
+        };
+        let expr = state.create_physical_expr(expr, &df_schema)?;
+
+        let boundaries = ExprBoundaries::try_new_unbounded(schema)?;
+        let context = datafusion::physical_expr::AnalysisContext::new(boundaries);
+
+        let context = datafusion::physical_expr::analyze(&expr, context, schema)?;
+        if let Some(ts) = context
+            .boundaries
+            .iter()
+            .find(|boundary| boundary.column.name() == Self::COL_DATE_START)
+            .and_then(|boundaries| extract_from_scalar(boundaries.interval.lower()))
+        {
+            ts_start = ts;
+        }
+        if let Some(boundaries) = context
+            .boundaries
+            .iter()
+            .find(|boundary| boundary.column.name() == Self::COL_DATE_END)
+        {
+            if let Some(ts) = extract_from_scalar(boundaries.interval.upper()) {
+                ts_end = ts;
+            }
+        }
+
+        Ok((ts_start, ts_end))
+    }
 }
 
 #[async_trait]
@@ -114,8 +169,8 @@ impl TableProvider for AirQualityTable {
     fn schema(&self) -> SchemaRef {
         Arc::new(Schema::new([
             Arc::new(Field::new("station_id", DataType::UInt64, false)),
-            Arc::new(Field::new("date_start", ts_datatype(), false)),
-            Arc::new(Field::new("date_end", ts_datatype(), false)),
+            Arc::new(Field::new(Self::COL_DATE_START, ts_datatype(), false)),
+            Arc::new(Field::new(Self::COL_DATE_END, ts_datatype(), false)),
             Arc::new(Field::new("index", DataType::UInt64, false)),
             Arc::new(Field::new("incomplete", DataType::Boolean, false)),
             Arc::new(Field::new(
@@ -132,12 +187,14 @@ impl TableProvider for AirQualityTable {
 
     async fn scan(
         &self,
-        _state: &dyn Session,
+        state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
+        filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let res = list_air_quality(&self.client)
+        let schema = self.schema();
+        let (ts_from, ts_to) = self.analyze_date_range(state, filters, &schema)?;
+        let res = list_air_quality(&self.client, ts_from, ts_to)
             .await
             .context("list air quality")
             .map_err(|e| DataFusionError::External(e.into()))?;
@@ -204,7 +261,6 @@ impl TableProvider for AirQualityTable {
             }
         }
 
-        let schema = self.schema();
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
             vec![
@@ -218,6 +274,13 @@ impl TableProvider for AirQualityTable {
         )?;
         let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
         Ok(Arc::new(exec))
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> Result<Vec<TableProviderFilterPushDown>> {
+        Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
     }
 }
 

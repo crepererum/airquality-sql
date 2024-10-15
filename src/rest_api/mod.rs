@@ -5,7 +5,7 @@ pub(crate) mod utils;
 use std::{collections::HashMap, marker::PhantomData};
 
 use anyhow::{Context, Result};
-use jiff::civil::DateTime;
+use jiff::{civil::DateTime, Timestamp, Unit, ZonedRound};
 use reqwest::Client;
 use serde::{
     de::{Error, SeqAccess, Visitor},
@@ -14,6 +14,8 @@ use serde::{
 use serde_tuple::Deserialize_tuple;
 
 use utils::{IntBool, OptionalString, StringF64, StringU64, ZipCode};
+
+use crate::time::JIFF_TZ;
 
 const BASE_URL: &str = "https://www.umweltbundesamt.de/api/air_data/v3";
 
@@ -79,14 +81,41 @@ impl<'de> serde::Deserialize<'de> for AirQualityRow {
 
 pub(crate) type AirQuality = HashMap<StringU64, HashMap<DateTime, AirQualityRow>>;
 
-pub(crate) async fn list_air_quality(client: &Client) -> Result<AirQuality> {
+pub(crate) async fn list_air_quality(
+    client: &Client,
+    ts_from: Timestamp,
+    ts_to: Timestamp,
+) -> Result<AirQuality> {
+    let ts_from = ts_from
+        .to_zoned(JIFF_TZ.clone())
+        .round(
+            ZonedRound::new()
+                .smallest(Unit::Hour)
+                .mode(jiff::RoundMode::Floor),
+        )
+        .context("ts rounding")?;
+    let ts_to = ts_to
+        .to_zoned(JIFF_TZ.clone())
+        .round(
+            ZonedRound::new()
+                .smallest(Unit::Hour)
+                .mode(jiff::RoundMode::Ceil),
+        )
+        .context("ts rounding")?;
+
     Ok(client
         .get(format!("{BASE_URL}/airquality/json"))
         .query(&[
-            ("date_from", "2019-01-01"),
-            ("time_from", "9"),
-            ("date_to", "2019-01-01"),
-            ("time_to", "9"),
+            (
+                "date_from",
+                &jiff::fmt::strtime::format("%Y-%m-%d", &ts_from).context("format time")?,
+            ),
+            ("time_from", &(ts_from.hour() + 1).to_string()),
+            (
+                "date_to",
+                &jiff::fmt::strtime::format("%Y-%m-%d", &ts_to).context("format time")?,
+            ),
+            ("time_to", &(ts_to.hour() + 1).to_string()),
         ])
         .send()
         .await
