@@ -110,12 +110,14 @@ pub(crate) async fn list_air_quality(
                 "date_from",
                 &jiff::fmt::strtime::format("%Y-%m-%d", &ts_from).context("format time")?,
             ),
+            // don't ask, it's a mess
             ("time_from", &(ts_from.hour() + 1).to_string()),
             (
                 "date_to",
                 &jiff::fmt::strtime::format("%Y-%m-%d", &ts_to).context("format time")?,
             ),
-            ("time_to", &(ts_to.hour() + 1).to_string()),
+            // never use zero because it is some implicit default
+            ("time_to", &ts_to.hour().max(1).to_string()),
         ])
         .send()
         .await
