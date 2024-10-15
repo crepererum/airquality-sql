@@ -24,6 +24,7 @@ use datafusion::{
     },
     prelude::Expr,
 };
+use futures::StreamExt;
 use jiff::{civil::DateTime, Timestamp, ToSpan};
 use reqwest::Client;
 
@@ -282,22 +283,27 @@ impl TableProvider for AirQualityTable {
         let stream_fn = move |_| {
             let schema_captured_stream = Arc::clone(&schema_captured);
             let client_captured = client.clone();
-            let stream = futures::stream::try_unfold(Some(ts_from), move |ts_from| {
+            let stream = futures::stream::unfold(Some(ts_from), move |ts_from| async move {
+                let ts_from = ts_from?;
+                let ts_to_step = ts_from.saturating_add(1.hour()).min(ts_to);
+                Some((
+                    (ts_from, ts_to_step),
+                    (ts_to_step < ts_to).then_some(ts_to_step),
+                ))
+            })
+            .map(move |(ts_from, ts_to)| {
                 let client = client_captured.clone();
                 let schema = Arc::clone(&schema_captured_stream);
                 async move {
-                    let Some(ts_from) = ts_from else {
-                        return Ok(None);
-                    };
-                    let ts_to_step = ts_from.saturating_add(1.hour()).min(ts_to);
-                    let data = list_air_quality(&client, ts_from, ts_to_step)
+                    let data = list_air_quality(&client, ts_from, ts_to)
                         .await
                         .context("list air quality")
                         .map_err(|e| DataFusionError::External(e.into()))?;
                     let batch = Self::rest_to_arrow(data, &schema)?;
-                    Ok(Some((batch, (ts_to_step < ts_to).then_some(ts_to_step))))
+                    Ok(batch)
                 }
-            });
+            })
+            .buffer_unordered(10);
             let stream = RecordBatchStreamAdapter::new(Arc::clone(&schema_captured), stream);
             Box::pin(stream) as SendableRecordBatchStream
         };
