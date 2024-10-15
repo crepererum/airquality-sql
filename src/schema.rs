@@ -15,19 +15,24 @@ use datafusion::{
     common::DFSchema,
     datasource::TableType,
     error::{DataFusionError, Result},
+    execution::SendableRecordBatchStream,
     logical_expr::{utils::conjunction, TableProviderFilterPushDown},
     physical_expr::ExprBoundaries,
-    physical_plan::{memory::MemoryExec, ExecutionPlan},
+    physical_plan::{
+        memory::MemoryExec, stream::RecordBatchStreamAdapter, streaming::StreamingTableExec,
+        ExecutionPlan,
+    },
     prelude::Expr,
 };
-use jiff::{civil::DateTime, Timestamp};
+use jiff::{civil::DateTime, Timestamp, ToSpan};
 use reqwest::Client;
 
 use crate::{
     rest_api::{
-        list_air_quality, AirQualityComponent, AirQualityRow, Component, Network, Station,
-        StationSetting, StationType,
+        list_air_quality, AirQuality, AirQualityComponent, AirQualityRow, Component, Network,
+        Station, StationSetting, StationType,
     },
+    stream::SimplePartitionStream,
     time::{dt_to_seconds, extract_from_scalar, ts_datatype, ARROW_TZ, JIFF_TZ},
 };
 
@@ -158,47 +163,8 @@ impl AirQualityTable {
 
         Ok((ts_start, ts_end))
     }
-}
 
-#[async_trait]
-impl TableProvider for AirQualityTable {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        Arc::new(Schema::new([
-            Arc::new(Field::new("station_id", DataType::UInt64, false)),
-            Arc::new(Field::new(Self::COL_DATE_START, ts_datatype(), false)),
-            Arc::new(Field::new(Self::COL_DATE_END, ts_datatype(), false)),
-            Arc::new(Field::new("index", DataType::UInt64, false)),
-            Arc::new(Field::new("incomplete", DataType::Boolean, false)),
-            Arc::new(Field::new(
-                "components",
-                DataType::List(Self::component_field()),
-                false,
-            )),
-        ]))
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        _limit: Option<usize>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let schema = self.schema();
-        let (ts_from, ts_to) = self.analyze_date_range(state, filters, &schema)?;
-        let res = list_air_quality(&self.client, ts_from, ts_to)
-            .await
-            .context("list air quality")
-            .map_err(|e| DataFusionError::External(e.into()))?;
-
+    fn rest_to_arrow(data: AirQuality, schema: &SchemaRef) -> Result<RecordBatch> {
         let mut station_id_builder = UInt64Builder::new();
         let mut date_start_builder =
             TimestampSecondBuilder::new().with_timezone(Arc::clone(&ARROW_TZ));
@@ -211,7 +177,7 @@ impl TableProvider for AirQualityTable {
             1024,
         ))
         .with_field(Self::component_field());
-        for (station_id, sub) in res {
+        for (station_id, sub) in data {
             for (date_start, row) in sub {
                 let AirQualityRow {
                     date_end,
@@ -262,7 +228,7 @@ impl TableProvider for AirQualityTable {
         }
 
         let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
+            Arc::clone(schema),
             vec![
                 Arc::new(station_id_builder.finish()),
                 Arc::new(date_start_builder.finish()),
@@ -272,7 +238,78 @@ impl TableProvider for AirQualityTable {
                 Arc::new(components_builder.finish()),
             ],
         )?;
-        let exec = MemoryExec::try_new(&[vec![batch]], schema, projection.cloned())?;
+        Ok(batch)
+    }
+}
+
+#[async_trait]
+impl TableProvider for AirQualityTable {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::new([
+            Arc::new(Field::new("station_id", DataType::UInt64, false)),
+            Arc::new(Field::new(Self::COL_DATE_START, ts_datatype(), false)),
+            Arc::new(Field::new(Self::COL_DATE_END, ts_datatype(), false)),
+            Arc::new(Field::new("index", DataType::UInt64, false)),
+            Arc::new(Field::new("incomplete", DataType::Boolean, false)),
+            Arc::new(Field::new(
+                "components",
+                DataType::List(Self::component_field()),
+                false,
+            )),
+        ]))
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let schema = self.schema();
+        let (ts_from, ts_to) = self.analyze_date_range(state, filters, &schema)?;
+
+        let schema_captured = Arc::clone(&schema);
+        let client = self.client.clone();
+        let stream_fn = move |_| {
+            let schema_captured_stream = Arc::clone(&schema_captured);
+            let client_captured = client.clone();
+            let stream = futures::stream::try_unfold(Some(ts_from), move |ts_from| {
+                let client = client_captured.clone();
+                let schema = Arc::clone(&schema_captured_stream);
+                async move {
+                    let Some(ts_from) = ts_from else {
+                        return Ok(None);
+                    };
+                    let ts_to_step = ts_from.saturating_add(1.hour()).min(ts_to);
+                    let data = list_air_quality(&client, ts_from, ts_to_step)
+                        .await
+                        .context("list air quality")
+                        .map_err(|e| DataFusionError::External(e.into()))?;
+                    let batch = Self::rest_to_arrow(data, &schema)?;
+                    Ok(Some((batch, (ts_to_step < ts_to).then_some(ts_to_step))))
+                }
+            });
+            let stream = RecordBatchStreamAdapter::new(Arc::clone(&schema_captured), stream);
+            Box::pin(stream) as SendableRecordBatchStream
+        };
+
+        let exec = StreamingTableExec::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(SimplePartitionStream::new(schema, stream_fn))],
+            projection,
+            [],
+            false,
+            limit,
+        )?;
         Ok(Arc::new(exec))
     }
 

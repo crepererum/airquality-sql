@@ -49,6 +49,7 @@ dependencies = [
  "async-trait",
  "datafusion",
  "directories",
+ "futures",
  "jiff",
  "reqwest",
  "rustyline",

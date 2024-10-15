@@ -1,6 +1,7 @@
 mod async_rustyline;
 mod rest_api;
 mod schema;
+mod stream;
 mod time;
 
 use std::sync::Arc;
