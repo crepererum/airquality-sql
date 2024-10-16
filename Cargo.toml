@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.89"
 arrow = "53.1.0"
 async-trait = "0.1.83"
-datafusion = { version = "42.0.0", default-features = false }
+datafusion = { version = "42.0.0", default-features = false, features = ["nested_expressions"] }
 directories = "5.0.1"
 futures = "0.3.31"
 jiff = { version = "0.1.13", features = ["serde"]}
