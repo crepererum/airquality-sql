@@ -11,8 +11,12 @@ datafusion = { version = "42.0.0", default-features = false, features = ["nested
 directories = "5.0.1"
 futures = "0.3.31"
 jiff = { version = "0.1.13", features = ["serde"]}
+regex = "1.11.0"
 reqwest = { version = "0.12.8", default-features = false, features = ["charset", "json", "http2", "rustls-tls-webpki-roots"]}
 rustyline = { version = "14.0.0", default-features = false, features = ["with-file-history"]}
 serde = { version = "1.0.210", features = ["derive"] }
 serde_tuple = "1.0.0"
 tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+serde_json = "1.0.128"

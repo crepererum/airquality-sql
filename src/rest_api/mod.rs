@@ -13,7 +13,7 @@ use serde::{
 };
 use serde_tuple::Deserialize_tuple;
 
-use utils::{IntBool, OptionalString, StringF64, StringU64, ZipCode};
+use utils::{IntBool, OptionalString, StringF64, StringU64, WeirdTimestamp, ZipCode};
 
 use crate::time::JIFF_TZ;
 
@@ -29,7 +29,7 @@ pub(crate) struct AirQualityComponent {
 
 #[derive(Debug)]
 pub(crate) struct AirQualityRow {
-    pub(crate) date_end: DateTime,
+    pub(crate) date_end: WeirdTimestamp,
     pub(crate) index: u64,
     pub(crate) incomplete: IntBool,
     pub(crate) components: Vec<AirQualityComponent>,
@@ -79,7 +79,7 @@ impl<'de> serde::Deserialize<'de> for AirQualityRow {
     }
 }
 
-pub(crate) type AirQuality = HashMap<StringU64, HashMap<DateTime, AirQualityRow>>;
+pub(crate) type AirQuality = HashMap<StringU64, HashMap<WeirdTimestamp, AirQualityRow>>;
 
 pub(crate) async fn list_air_quality(
     client: &Client,

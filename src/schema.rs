@@ -189,10 +189,12 @@ impl AirQualityTable {
 
                 station_id_builder.append_value(station_id.into());
                 date_start_builder.append_value(
-                    dt_to_seconds(date_start).map_err(|e| DataFusionError::External(e.into()))?,
+                    dt_to_seconds(date_start.into())
+                        .map_err(|e| DataFusionError::External(e.into()))?,
                 );
                 date_end_builder.append_value(
-                    dt_to_seconds(date_end).map_err(|e| DataFusionError::External(e.into()))?,
+                    dt_to_seconds(date_end.into())
+                        .map_err(|e| DataFusionError::External(e.into()))?,
                 );
                 index_builder.append_value(index);
                 incomplete_builder.append_value(incomplete.into());
