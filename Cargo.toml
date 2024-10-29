@@ -13,7 +13,7 @@ directories = "5.0.1"
 futures = "0.3.31"
 jiff = { version = "0.1.13", features = ["serde"]}
 regex = "1.11.1"
-reqwest = { version = "0.12.8", default-features = false, features = ["charset", "json", "http2", "rustls-tls-webpki-roots"]}
+reqwest = { version = "0.12.9", default-features = false, features = ["charset", "json", "http2", "rustls-tls-webpki-roots"]}
 rustyline = { version = "14.0.0", default-features = false, features = ["with-file-history"]}
 serde = { version = "1.0.214", features = ["derive"] }
 serde_tuple = "1.0.0"
