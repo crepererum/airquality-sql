@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-anyhow = "1.0.91"
+anyhow = "1.0.92"
 arrow = "53.2.0"
 async-trait = "0.1.83"
 datafusion = { version = "42.1.0", default-features = false, features = ["nested_expressions"] }
