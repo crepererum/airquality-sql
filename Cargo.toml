@@ -11,7 +11,7 @@ async-trait = "0.1.83"
 datafusion = { version = "42.1.0", default-features = false, features = ["nested_expressions"] }
 directories = "5.0.1"
 futures = "0.3.31"
-jiff = { version = "0.1.13", features = ["serde"]}
+jiff = { version = "0.1.14", features = ["serde"]}
 regex = "1.11.1"
 reqwest = { version = "0.12.9", default-features = false, features = ["charset", "json", "http2", "rustls-tls-webpki-roots"]}
 rustyline = { version = "14.0.0", default-features = false, features = ["with-file-history"]}
