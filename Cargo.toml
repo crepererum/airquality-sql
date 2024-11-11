@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 anyhow = "1.0.93"
 arrow = "53.2.0"
 async-trait = "0.1.83"
-datafusion = { version = "42.2.0", default-features = false, features = ["nested_expressions"] }
+datafusion = { version = "43.0.0", default-features = false, features = ["nested_expressions"] }
 directories = "5.0.1"
 futures = "0.3.31"
 jiff = { version = "0.1.14", features = ["serde"]}
